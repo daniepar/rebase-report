@@ -40,41 +40,44 @@ def get_changelist():
 def report():
     data = {}
 
-    connection, cursor = connect(as_dict=True)
-    cursor.execute('select * from conflicts where commit_sha is not null')
+    with sqlite3.connect(git.rebase_db()) as c:
+        c.text_factory = str
+        c.row_factory = sqlite3.Row
+        cursor = c.cursor()
+        cursor.execute('select * from conflicts where commit_sha is not null')
 
-    # parse each conflict
-    for conflict in cursor.fetchall():
-        LOG.debug('Processing conflict %s' % conflict['id'])
+        # parse each conflict
+        for conflict in cursor.fetchall():
+            LOG.debug('Processing conflict %s' % conflict['id'])
 
-        cursor.execute('select * from tickets where conflict_id=?', (conflict['id'],))
-        tickets = cursor.fetchall()
-        tickets = ['-'.join([t['team'], str(t['ticket'])]) for t in tickets]
+            cursor.execute('select * from tickets where conflict_id=?', (conflict['id'],))
+            tickets = cursor.fetchall()
+            tickets = ['-'.join([t['team'], str(t['ticket'])]) for t in tickets]
 
-        cursor.execute('select * from files where conflict_id=?', (conflict['id'],))
-        files = [dict(f) for f in cursor.fetchall()]
+            cursor.execute('select * from files where conflict_id=?', (conflict['id'],))
+            files = [dict(f) for f in cursor.fetchall()]
 
-        cursor.execute('select * from messages where conflict_id=?', (conflict['id'],))
-        messages = {msg['sha']: msg['text'] for msg in cursor.fetchall()}
+            cursor.execute('select * from messages where conflict_id=?', (conflict['id'],))
+            messages = {msg['sha']: msg['text'] for msg in cursor.fetchall()}
 
-        data[conflict['commit_sha']] = {
-            'tickets': tickets,
-            'files': files,
-            'messages': messages,
-            'shas': {
-                'onto': conflict['onto_sha'],
-                'stopped': conflict['stopped_sha'],
+            data[conflict['commit_sha']] = {
+                'tickets': tickets,
+                'files': files,
+                'messages': messages,
+                'shas': {
+                    'onto': conflict['onto_sha'],
+                    'stopped': conflict['stopped_sha'],
+                }
             }
-        }
 
-    with open('output.html', 'w') as output_file:
-        template = disk.get_jinja_template()
-        output_file.write(template.render(
-            changelist=get_changelist(),
-            data=data,
-            json_data=json.dumps(data),
-            basename=os.path.basename
-        ))
+        with open('output.html', 'w') as output_file:
+            template = disk.get_jinja_template()
+            output_file.write(template.render(
+                changelist=get_changelist(),
+                data=data,
+                json_data=json.dumps(data),
+                basename=os.path.basename
+            ))
 
 @before('rebase')
 def initialize():
@@ -83,9 +86,10 @@ def initialize():
     if not (git.is_rebasing()):
         LOG.debug('Initializing database..')
         try:
-            connection, cursor = connect()
-            cursor.executescript(disk.get_schema())
-            connection.close()
+            with sqlite3.connect(git.rebase_db()) as c:
+                c.text_factory = str
+                cursor = c.cursor()
+                cursor.executescript(disk.get_schema())
         except Exception as e:
             LOG.error(str(e))
 
@@ -97,91 +101,90 @@ def saveTodo():
         shutil.copy(git.rebase_todo(), path)
 
 def get_conflict_files():
-    connection, cursor = connect()
-    cursor.execute('select path from files where conflict_id=?', (conflict_id(),))
-    files = [line[0] for line in cursor.fetchall()]
-    connection.close()
-    return files
+    with sqlite3.connect(git.rebase_db()) as c:
+        c.text_factory = str
+        cursor = c.cursor()
+        cursor.execute('select path from files where conflict_id=?', (conflict_id(),))
+        files = [line[0] for line in cursor.fetchall()]
+        return files
 
 
 @after('rebase')
 def saveAnyConflicts():
     if (git.is_rebasing()):
 
-        connection, cursor = connect()
-
         parent = git.current_sha()
         stopped = git.stopped_sha()
         onto = git.onto_sha()
 
-        cursor.execute('insert into conflicts values(null, ?, ?, ?, ?)', (None, parent, stopped, onto,))
-        connection.commit()
-        conflict_id = cursor.lastrowid
+        with sqlite3.connect(git.rebase_db()) as c:
+            c.text_factory = str
+            cursor = c.cursor()
+            cursor.execute('insert into conflicts values(null, ?, ?, ?, ?)', (None, parent, stopped, onto,))
+            conflict_id = cursor.lastrowid
 
-        LOG.debug('Stopped SHA is %s' % git.stopped_sha())
-        LOG.debug('Onto SHA is %s ' % git.onto_sha())
+            LOG.debug('Stopped SHA is %s' % git.stopped_sha())
+            LOG.debug('Onto SHA is %s ' % git.onto_sha())
 
-        # save ticket numbers from stop commit
-        stopped_msg = git.get_commit_message(git.stopped_sha())
-        cursor.execute('insert into messages values(null, ?, ?, ?)',
-                      (conflict_id, stopped_msg, git.stopped_sha()))
-        tickets = re.findall('SOLAR-[\d]+', stopped_msg)
-        tickets += re.findall('GALACTIC-[\d]+', stopped_msg)
+            # save ticket numbers from stop commit
+            stopped_msg = git.get_commit_message(git.stopped_sha())
+            c.execute('insert into messages values(null, ?, ?, ?)',
+                          (conflict_id, stopped_msg, git.stopped_sha()))
+            tickets = re.findall('SOLAR-[\d]+', stopped_msg)
+            tickets += re.findall('GALACTIC-[\d]+', stopped_msg)
 
-        # save ticket numbers from onto commit
-        onto_msg = git.get_commit_message(git.onto_sha())
-        cursor.execute('insert into messages values(null, ?, ?, ?)',
-                      (conflict_id, onto_msg, git.onto_sha()))
-        tickets += re.findall('SOLAR-[\d]+', onto_msg)
-        tickets += re.findall('GALACTIC-[\d]+', onto_msg)
+            # save ticket numbers from onto commit
+            onto_msg = git.get_commit_message(git.onto_sha())
+            c.execute('insert into messages values(null, ?, ?, ?)',
+                          (conflict_id, onto_msg, git.onto_sha()))
+            tickets += re.findall('SOLAR-[\d]+', onto_msg)
+            tickets += re.findall('GALACTIC-[\d]+', onto_msg)
 
-        for ticket in tickets:
-            team, number = ticket.split('-')
-            cursor.execute('insert into tickets values(null, ?, ?, ?)', (conflict_id, team, number,))
+            for ticket in tickets:
+                team, number = ticket.split('-')
+                c.execute('insert into tickets values(null, ?, ?, ?)', (conflict_id, team, number,))
 
-        # save each conflict
-        for conflict in git.list_conflicts():
+            # save each conflict
+            for conflict in git.list_conflicts():
 
-            combined = None
+                combined = None
 
-            # save stopped file
-            stopped_file = git.get_file_for_commit(conflict, stopped)
+                # save stopped file
+                stopped_file = git.get_file_for_commit(conflict, stopped)
 
-            # save onto file
-            onto_file = git.get_file_for_commit(conflict, onto)
+                # save onto file
+                onto_file = git.get_file_for_commit(conflict, onto)
 
-            # copy combined
-            if os.path.exists(conflict):
-                combined = disk.grab_file(conflict)
+                # copy combined
+                if os.path.exists(conflict):
+                    combined = disk.grab_file(conflict)
 
-            cursor.execute('insert into files values(null, ?, ?, ?, ?, ?, ?, ?)',
-                            (conflict_id, conflict, None, combined, stopped_file, onto_file, None))
-            connection.commit()
-        connection.close()
+                c.execute('insert into files values(null, ?, ?, ?, ?, ?, ?, ?)',
+                                (conflict_id, conflict, None, combined, stopped_file, onto_file, None))
 
 @after('rebase', ['--continue'])
 def assignCommitForConflict():
     cid = conflict_id() - 1
-    connection, cursor = connect()
-    cursor.execute('select parent_sha from conflicts where id=?', (cid,))
 
-    parent_sha = cursor.fetchone()[0]
-    sha = git.get_next_sha(parent_sha)
-    cursor.execute('update conflicts set commit_sha=? where id=?', (sha, cid))
-    connection.commit()
+    with sqlite3.connect(git.rebase_db()) as c:
+        c.text_factory = str
+        cursor = c.cursor()
+        cursor.execute('select parent_sha from conflicts where id=?', (cid,))
 
-    msg = git.get_commit_message(sha)
-    cursor.execute('insert into messages values(null, ?, ?, ?)', (cid, msg, sha))
-    connection.commit()
+        parent_sha = cursor.fetchone()[0]
+        sha = git.get_next_sha(parent_sha)
+        msg = git.get_commit_message(sha)
 
-    connection.close()
+        c.execute('update conflicts set commit_sha=? where id=?', (sha, cid))
+        c.execute('insert into messages values(null, ?, ?, ?)', (cid, msg, sha))
 
 def conflict_id():
-    connection, cursor = connect()
-    cursor.execute('select id from conflicts where stopped_sha=? and onto_sha=?', (git.stopped_sha(), git.onto_sha()))
-    conflict_id = cursor.fetchone()[0]
-    connection.close()
-    return conflict_id
+    with sqlite3.connect(git.rebase_db()) as c:
+        c.text_factory = str
+        cursor = c.cursor()
+        cursor.execute('select id from conflicts where stopped_sha=? and onto_sha=?', (git.stopped_sha(), git.onto_sha()))
+        conflict_id = cursor.fetchone()[0]
+        return conflict_id
 
 @before('rebase', ['--continue'])
 def clone_before_continue():
@@ -191,25 +194,16 @@ def clone_before_continue():
         if len(line) == 2:
             data[line[1]] = line[0]
 
-    connection, cursor = connect()
-    paths = get_conflict_files()
-    for path in paths:
-        f = None
-        status = data.get(path, 'D')
-        if status != 'D':
-            f = disk.grab_file(path)
-        cursor.execute('update files set resolved=?, status=? where conflict_id=? and path=?',
-                      (f, status, conflict_id(), path,))
-        connection.commit()
-    connection.close()
-
-def connect(as_dict=False):
-    connection = sqlite3.connect(git.rebase_db())
-    connection.text_factory = str
-    if as_dict:
-        connection.row_factory = sqlite3.Row
-    return (connection, connection.cursor())
-
+    with sqlite3.connect(git.rebase_db()) as c:
+        c.text_factory = str
+        paths = get_conflict_files()
+        for path in paths:
+            f = None
+            status = data.get(path, 'D')
+            if status != 'D':
+                f = disk.grab_file(path)
+            c.execute('update files set resolved=?, status=? where conflict_id=? and path=?',
+                          (f, status, conflict_id(), path,))
 
 @after('status')
 def stuff():
