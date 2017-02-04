@@ -15,16 +15,21 @@ pip install git+https://github.com/daniepar/rebase-report.git
 1. Activate the virtual environment that has ``rebase-report`` installed:
 
   ```bash
-  . venv/bin/activate
+  $ . venv/bin/activate
   ```
 1. Begin the rebase:
 
   ```bash
-  cd my_repo
-  git rebase -i some_branch
+  (venv) $ cd my_repo
+  (venv) $ git rebase -i some_branch
   ```
 1. After the rebase completes, generate a report:
 
   ```bash
-  git report
+  (venv) $ git report
+  ```
+1. Once you're happy with the report, deactivate the virtual environment:
+
+  ```bash
+  (venv) $ deactivate
   ```
